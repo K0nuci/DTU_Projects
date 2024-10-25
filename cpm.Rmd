@@ -1,0 +1,294 @@
+---
+title: "cpm_project"
+output: html_document
+date: "2023-06-12"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+
+
+# Load packages
+```{r}
+library(lubridate)
+library(forcats)
+library(stringr)
+library(purrr)
+library(tidyr)
+library(tibble)
+library(tidyverse)
+library(factoextra)
+library(MASS)
+library(dplyr)
+library(readr)
+library(plotly)
+library(ggplot2)
+```
+
+
+# Load data Phenotype and gene expression (FPKM) for BREAST CANCER
+
+## Load expression data from Xena - FPKM
+```{r}
+fpkm <- read.table("TCGA-BRCA.htseq_fpkm.tsv", header = TRUE, row.names = 1)
+```
+
+## Load phenotype data from Xena 
+```{r}
+pheno <- read.table("TCGA-BRCA.GDC_phenotype.tsv", header = TRUE, sep = "\t", quote="")
+```
+
+## Gene annotation
+```{r}
+gene_annotation <- read.table("gencode.v22.annotation.gene.probeMap", header = TRUE, sep = "\t", quote="")
+gene_annotation <- data.frame(gene_annotation)[c('id', 'gene')]
+```
+
+## Save initial data
+```{r}
+save(fpkm, pheno, gene_annotation, file = "initial.Rdata")
+```
+
+
+### SUBSET ###
+
+```{r}
+desired_stages <- c("stage i", "stage iv")
+```
+
+
+
+
+
+##### PREPROCESSING #####
+
+
+
+## Find duplicates in Gene names and delete the corresponding Ensemble IDs from FPKM
+```{r}
+# Find duplicates in gene_annotation$gene
+duplicates <- duplicated(gene_annotation$gene)
+
+# Get the duplicated gene names
+duplicated_gene_names <- gene_annotation$gene[duplicates]
+
+# Remove corresponding rows from fpkm
+fpkm <- fpkm[!(rownames(fpkm) %in% gene_annotation$id[duplicates]), ]
+
+
+```
+
+## Convert Ensemble IDs to Gene IDs
+```{r}
+# Assuming "gene_annotation" is your dataframe with columns "id" and "gene"
+# Assuming "fpkm" is your dataframe with row names as ensembles
+
+# Convert "gene_annotation" dataframe to a named vector
+gene_names <- gene_annotation$gene
+names(gene_names) <- gene_annotation$id
+
+# Match row names of "fpkm" with gene names
+matched_gene_names <- gene_names[rownames(fpkm)]
+
+# Update row names of "fpkm" with matched gene names
+rownames(fpkm) <- matched_gene_names
+```
+
+## Extract "ID" and "Tumor stage" columns from phenotype data
+```{r}
+pheno <- data.frame(pheno)[c('submitter_id.samples', 'tumor_stage.diagnoses')]
+```
+
+## Rename phenotype data columns to "Samples" and "Tumor stage"
+```{r}
+colnames(pheno) <- c("Samples", "Tumor_Stage")
+```
+
+## Replace "-" with "." to match with "ID" in gene expression dat
+```{r}
+pheno$Samples <- gsub(pattern = "\\-", replacement = ".", x = pheno$Samples)
+```
+
+## Remove "" and "not reported"
+```{r}
+pheno <- dplyr::filter(pheno, Tumor_Stage != "" & Tumor_Stage != "not reported")
+```
+
+## Remove outlier "TCGA.A7.A13D.01B" from gene expression
+```{r}
+fpkm <- subset(fpkm, select = -TCGA.A7.A13D.01B)
+```
+
+## Subset the phenotype table to contain only the samples you have expression data for
+```{r}
+pheno <- pheno[pheno$Samples %in% colnames(fpkm),]
+```
+
+## Subset the expression data to contain only the samples you have phenotype information  for
+```{r}
+fpkm <- fpkm[colnames(fpkm) %in% pheno$Samples]
+```
+
+## fpkm to data frame
+```{r}
+fpkm <- data.frame(fpkm)
+```
+
+## save Rdata object for later use
+```{r}
+save(fpkm, pheno, pca, file = "project.Rdata")
+```
+
+##### DISTRIBUTION #####
+
+# Gene expression data distribution
+```{r}
+ggplot(data = fpkm, aes(x = fpkm[,1])) +
+  geom_density(fill = "skyblue", color = "black") +
+  labs(x = "Expression Value", y = "Density") +
+  ggtitle("Density Plot for ", names(fpkm)[1])
+```
+
+
+
+
+
+
+
+
+
+
+##### PCA #####
+
+
+## PCA for FPKM
+```{r}
+fpkm <- fpkm[rowSums(fpkm) > 0,]
+pca <- prcomp(t(fpkm), scale. = TRUE)
+```
+
+## Scree plot - Variance explaned vs PCs
+```{r}
+fviz_eig(pca, 
+         addlabels = TRUE, 
+         ylim = c(0, 70),
+         main="Scree plot")
+```
+## 2D - Plot
+```{r}
+# Create data frame for plotting
+pc <- data.frame(PC1 = pca$x[,1], 
+                 PC2 = pca$x[,2],
+                 PC3 = pca$x[,3],
+                 PC4 = pca$x[,4],
+                 stage = pheno[match(colnames(fpkm),
+                                     pheno$Samples),]
+                 $Tumor_Stage)
+
+pca_FPKM_plot <- ggplot(pc, aes(x = PC1, y = PC2, color = stage)) +
+  geom_point(size = 4, alpha = 0.8)+
+  labs(title = "Principal Components Analysis of Stages of Breast Cancer",
+subtitle = "FPKM Expression data from RNA Seq",
+x = "PC1: 13.5%",
+y ="PC2: 4.2 %")
+
+ggsave("plots/pca_FPKM.png", pca_FPKM_plot  , width = 12, height = 9)
+  
+
+```
+
+
+## 3D - Plot
+```{r}
+plot_ly(x = pc$PC1, y = pc$PC2, z = pc$PC3, type="scatter3d", mode="markers", color = pc$stage)
+```
+
+
+
+
+
+
+
+
+
+##### ssGSEA #####
+
+
+
+## Read gene set
+```{r}
+genes <- cogena::gmt2list("h.all.v2023.1.Hs.symbols.gmt")
+```
+
+
+## Note for GSVA
+
+#   By default, ‘kcdf="Gaussian"’ which is suitable when input expression values are continuous, such as microarray #   fluorescent units in logarithmic scale, RNA-seq log-CPMs, log-RPKMs or log-TPMs. When input expression values # #   are integer counts, such as those derived from RNA-seq experiments, then this argument should be set to
+#   'kcdf="Poisson"’.
+
+## ssGSEA
+```{r}
+fpkm <- as.matrix(fpkm)
+ssGSEA_enrichments <- gsva(expr = fpkm, gset.idx.list = genes, method = "ssgsea")
+```
+## Save ssGSEA
+```{r}
+save(fpkm, pheno, gene_annotation, pca, ssGSEA_enrichments, file = "ssGSEA.Rdata")
+```
+
+
+## PCA for ssGSVA results
+```{r}
+ssGSEA_enrichments <- ssGSEA_enrichments[rowSums(ssGSEA_enrichments) > 0,]
+pca_ssGSEA <- prcomp(t(ssGSEA_enrichments), scale. = TRUE)
+```
+
+## Scree plot - Variance explaned vs PCs
+```{r}
+fviz_eig(pca_ssGSEA, 
+         addlabels = TRUE, 
+         ylim = c(0, 70),
+         main="Scree plot")
+```
+
+
+## 2D - Plot for ssGSEA
+```{r}
+# Create data frame for plotting
+pc_ssGSEA <- data.frame(PC1 = pca_ssGSEA$x[,1], 
+                 PC2 = pca_ssGSEA$x[,2],
+                 PC3 = pca_ssGSEA$x[,3],
+                 PC4 = pca_ssGSEA$x[,4],
+                 stage = pheno[match(colnames(fpkm),
+                                     pheno$Samples),]
+                 $Tumor_Stage)
+
+pca_ssGSEA_plot <- ggplot(pc_ssGSEA, aes(x = PC1, y = PC2, color = stage)) +
+  geom_point(size = 4, alpha = 0.8)+
+  labs(title = "Principal Components Analysis of Stages of Breast Cancer",
+subtitle = "FPKM Expression data from RNA Seq",
+x = "PC1: 42.7%",
+y ="PC2: 17.7 %")
+  
+ggsave("plots/pca_ssGSEA_plot.png", pca_ssGSEA_plot  , width = 12, height = 9)
+
+
+```
+
+
+## 3D - Plot
+```{r}
+plot_ly(x = pc_ssGSEA$PC1, y = pc_ssGSEA$PC2, z = pc_ssGSEA$PC3, type="scatter3d", mode="markers", color = pc_ssGSEA$stage)
+```
+
+
+
+
+
+
+
+
