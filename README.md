@@ -1,2 +1,2 @@
 # DTU_Projecys
-Here are the projects I have been part of during my studies at DTU
+This repository contains code from various projects and course assignments completed during my studies at the Technical University of Denmark (DTU)
